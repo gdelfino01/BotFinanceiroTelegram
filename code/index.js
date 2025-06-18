@@ -8,24 +8,19 @@ if (process.env.GOOGLE_CREDENTIALS_BASE64) {
 
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
-const { handleMessage, handleCallbackQuery } = require('./handlers');
+const cron = require('node-cron');
+const moment = require('moment');
 
-// Inicializa o bot
+const { handleMessage, handleCallbackQuery } = require('./handlers');
+const sheets = require('./sheets');
+
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
 
 console.log('🤖 Bot iniciado com sucesso!');
 
-// Listener para mensagens de texto
+// Listener para mensagens de texto e comandos
 bot.on('message', (msg) => {
-  // Ignora callbacks que também chegam como 'message'
-  if (msg.text && !msg.text.startsWith('/')) {
-    handleMessage(bot, msg);
-  }
-});
-
-// Listener para comandos (ex: /start, /gasto)
-bot.onText(/\/(.+)/, (msg, match) => {
-    handleMessage(bot, msg, match);
+  handleMessage(bot, msg);
 });
 
 // Listener para cliques nos botões (inline keyboard)
@@ -33,7 +28,32 @@ bot.on('callback_query', (callbackQuery) => {
   handleCallbackQuery(bot, callbackQuery);
 });
 
-// Tratamento de erros de polling para manter o bot rodando
+// --- TAREFA AGENDADA (CRON JOB) ---
+// Roda todo dia às 8:00 da manhã.
+cron.schedule('0 8 * * *', async () => {
+    console.log('Executando tarefa agendada de lançamentos recorrentes...');
+    const today = moment().date();
+    const recurringEntries = await sheets.getRecurringEntries();
+
+    const entriesForToday = recurringEntries.filter(e => e.diaDoMes === today);
+    
+    if (entriesForToday.length > 0) {
+        console.log(`Encontrados ${entriesForToday.length} lançamentos recorrentes para hoje.`);
+        for (const entry of entriesForToday) {
+            await sheets.writeToSheet(entry);
+            console.log(`Lançamento recorrente '${entry.descricao}' registrado.`);
+            // Opcional: notificar o admin/usuário
+            // bot.sendMessage(ADMIN_CHAT_ID, `Lançamento recorrente '${entry.descricao}' foi registrado.`);
+        }
+    } else {
+        console.log('Nenhum lançamento recorrente para hoje.');
+    }
+}, {
+    timezone: "America/Sao_Paulo"
+});
+
+
+// Tratamento de erros de polling
 bot.on('polling_error', (error) => {
   console.error(`Polling error: ${error.code} - ${error.message}`);
 });

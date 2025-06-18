@@ -1,3 +1,11 @@
+const fs = require('fs');
+if (process.env.GOOGLE_CREDENTIALS_BASE64) {
+  console.log('Decodificando credenciais do Google a partir da variável de ambiente...');
+  const credentials_buffer = Buffer.from(process.env.GOOGLE_CREDENTIALS_BASE64, 'base64');
+  fs.writeFileSync('credentials.json', credentials_buffer);
+  console.log('Arquivo credentials.json criado com sucesso.');
+}
+
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const { handleMessage, handleCallbackQuery } = require('./handlers');

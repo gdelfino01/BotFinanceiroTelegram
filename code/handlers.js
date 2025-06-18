@@ -25,13 +25,14 @@ async function handleCallbackQuery(bot, cbq) {
     
     bot.answerCallbackQuery(cbq.id);
 
+    // Se há uma conversa ativa, TUDO é enviado para o conversation handler.
     if (conversation.getState(chatId)) {
         const msg = { ...cbq.message, data: cbq.data };
         await conversation.handleResponse(bot, msg, true);
         return;
     }
     
-    // Roteador de Callbacks
+    // Roteador de Callbacks para quando NÃO HÁ conversa ativa.
     switch (type) {
         case 'flow': handleFlow(bot, cbq, params[0]); break;
         case 'menu': handleMenu(bot, cbq, params[0]); break;
@@ -44,11 +45,7 @@ async function handleCallbackQuery(bot, cbq) {
         case 'edit_field': handleEditField(bot, cbq, params); break;
         case 'delete_recurring': handleConfirmDeleteRecurring(bot, cbq, params[0]); break;
         case 'confirm_delete_recurring': handleDeleteRecurring(bot, cbq, params[0]); break;
-        case 'confirm': handleConfirm(bot, cbq, params[0]); break;
-        case 'cancel':
-            conversation.clearState(chatId);
-            await bot.editMessageText('❌ Operação cancelada.', { chat_id: chatId, message_id: messageId, reply_markup: null });
-            break;
+        // A lógica de 'confirm' e 'cancel' foi movida para dentro do conversation.js
     }
 }
 
@@ -64,11 +61,18 @@ async function handleCommand(bot, msg, command) {
 // --- CALLBACK SUB-HANDLERS ---
 function handleFlow(bot, cbq, action) {
     const chatId = cbq.message.chat.id;
-    if (action === 'add_gasto') conversation.start(chatId, 'add_transaction', { tipo: 'Despesa' });
-    if (action === 'add_receita') conversation.start(chatId, 'add_transaction', { tipo: 'Receita' });
-    if (action === 'add_recurring') conversation.start(chatId, 'add_recurring', {});
+    let message = '';
     
-    const message = action.includes('gasto') ? '💸 Qual o valor do gasto?' : (action.includes('receita') ? '💰 Qual o valor da receita?' : 'Qual a descrição do lançamento recorrente?');
+    if (action === 'add_gasto') {
+        conversation.start(chatId, 'add_transaction', { tipo: 'Despesa' });
+        message = '💸 Qual o valor do gasto?';
+    } else if (action === 'add_receita') {
+        conversation.start(chatId, 'add_transaction', { tipo: 'Receita' });
+        message = '💰 Qual o valor da receita?';
+    } else if (action === 'add_recurring') {
+        conversation.start(chatId, 'add_recurring', {});
+        message = 'Qual a descrição do lançamento recorrente?';
+    }
     bot.editMessageText(message, { chat_id: chatId, message_id: cbq.message.message_id });
 }
 
@@ -94,10 +98,6 @@ async function handleManage(bot, cbq, action) {
         await bot.editMessageText(text, { chat_id: chatId, message_id: messageId, reply_markup: ui.getEditSelectionKeyboard(entries) });
     } else if (action === 'recurring') {
         const entries = await sheets.getAllRecurringEntries();
-        if(entries.length === 0) {
-            await bot.editMessageText('Nenhum lançamento recorrente cadastrado.', { chat_id: chatId, message_id: messageId, reply_markup: ui.getRecurringManageKeyboard([]) });
-            return;
-        }
         await bot.editMessageText('Gerenciar lançamentos recorrentes:', { chat_id: chatId, message_id: messageId, reply_markup: ui.getRecurringManageKeyboard(entries) });
     }
 }
@@ -142,24 +142,67 @@ function handleEditField(bot, cbq, params) {
     const [rowNumber, column] = params;
     const fieldNames = {B: 'Descrição', C: 'Categoria', D: 'Valor', F: 'Conta'};
     conversation.start(cbq.message.chat.id, 'edit_transaction', { rowNumber, column, fieldName: fieldNames[column] });
-    bot.sendMessage(cbq.message.chat.id, `Digite o novo valor para *${fieldNames[column]}*:`, {parse_mode: 'Markdown'});
+    bot.editMessageText(`Digite o novo valor para *${fieldNames[column]}*:`, {chat_id: cbq.message.chat.id, message_id: cbq.message.message_id, parse_mode: 'Markdown'});
 }
 
-async function handleConfirm(bot, cbq, flow_id) {
-    const state = conversation.getState(cbq.message.chat.id);
-    if (!state) return;
+async function handleReport(bot, cbq, action) { 
+    const chatId = cbq.message.chat.id;
+    const messageId = cbq.message.message_id;
+    await bot.editMessageText('⏳ Gerando relatório...', { chat_id: chatId, message_id: messageId });
+
+    const allEntries = await sheets.getAllEntries();
+    const monthEntries = allEntries.filter(e => moment(e.data, 'DD/MM/YYYY').isSame(moment(), 'month'));
     
-    await bot.editMessageText('Salvando...', { chat_id: cbq.message.chat.id, message_id: cbq.message.message_id });
-    await sheets.writeToSheet(state.data);
-    await bot.editMessageText(`✅ Lançamento salvo com sucesso!`, { chat_id: cbq.message.chat.id, message_id: cbq.message.message_id });
-    
-    // Alerta de orçamento aqui...
-    
-    conversation.clearState(cbq.message.chat.id);
-    await bot.sendMessage(cbq.message.chat.id, 'O que faremos agora?', { reply_markup: ui.getMainMenuKeyboard() });
+    let reportText = '';
+
+    switch(action) {
+        case 'month_summary':
+            const income = monthEntries.filter(e => e.tipo === 'Receita').reduce((sum, e) => sum + e.valor, 0);
+            const expense = monthEntries.filter(e => e.tipo === 'Despesa').reduce((sum, e) => sum + e.valor, 0);
+            const balance = income - expense;
+            reportText = `*Resumo de ${moment().format('MMMM')}* 🗓️\n\n💰 Receitas: R$ ${income.toFixed(2)}\n💸 Despesas: R$ ${expense.toFixed(2)}\n\nSaldo do Mês: *R$ ${balance.toFixed(2)}*`;
+            break;
+
+        case 'category_spending':
+            const spendingByCategory = monthEntries
+                .filter(e => e.tipo === 'Despesa')
+                .reduce((acc, e) => {
+                    acc[e.categoria] = (acc[e.categoria] || 0) + e.valor;
+                    return acc;
+                }, {});
+
+            const sortedSpending = Object.entries(spendingByCategory).sort(([,a],[,b]) => b-a);
+            reportText = `*Gastos por Categoria em ${moment().format('MMMM')}* 🗂️\n\n`;
+            if (sortedSpending.length === 0) {
+                reportText += "Nenhuma despesa registrada este mês.";
+            } else {
+                 reportText += sortedSpending.map(([cat, val]) => `• ${cat}: R$ ${val.toFixed(2)}`).join('\n');
+            }
+            break;
+    }
+    await bot.editMessageText(reportText, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
 }
 
-async function handleReport(bot, cbq, action) { /* ...código anterior sem mudanças... */ }
-async function showBudget(bot, chatId) { /* ...código anterior sem mudanças... */ }
+async function showBudget(bot, chatId) { 
+    const budgets = await sheets.getBudgets();
+    const allEntries = await sheets.getAllEntries();
+    
+    const report = {};
+    const monthEntries = allEntries.filter(e => e.tipo === 'Despesa' && moment(e.data, 'DD/MM/YYYY').isSame(moment(), 'month'));
+
+    for(const category in budgets) {
+        const spent = monthEntries
+            .filter(e => e.categoria === category)
+            .reduce((sum, e) => sum + e.valor, 0);
+        
+        report[category] = {
+            budget: budgets[category],
+            spent: spent,
+        };
+    }
+    
+    const text = ui.getBudgetStatusText(report);
+    await bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+}
 
 module.exports = { handleMessage, handleCallbackQuery };

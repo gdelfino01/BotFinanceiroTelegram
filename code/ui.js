@@ -1,4 +1,5 @@
 const sheets = require('./sheets');
+const moment = require('moment'); // LINHA ADICIONADA PARA CORRIGIR O ERRO
 
 function getMainMenuKeyboard() {
     return { inline_keyboard: [

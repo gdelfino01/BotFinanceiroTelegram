@@ -45,7 +45,6 @@ async function handleCallbackQuery(bot, cbq) {
         case 'edit_field': handleEditField(bot, cbq, params); break;
         case 'delete_recurring': handleConfirmDeleteRecurring(bot, cbq, params[0]); break;
         case 'confirm_delete_recurring': handleDeleteRecurring(bot, cbq, params[0]); break;
-        // A lógica de 'confirm' e 'cancel' foi movida para dentro do conversation.js
     }
 }
 
@@ -153,17 +152,22 @@ async function handleReport(bot, cbq, action) {
     const allEntries = await sheets.getAllEntries();
     const monthEntries = allEntries.filter(e => moment(e.data, 'DD/MM/YYYY').isSame(moment(), 'month'));
     
+    const income = monthEntries.filter(e => e.tipo === 'Receita').reduce((sum, e) => sum + e.valor, 0);
+    const expense = monthEntries.filter(e => e.tipo === 'Despesa').reduce((sum, e) => sum + e.valor, 0);
+            
     let reportText = '';
 
     switch(action) {
         case 'month_summary':
-            const income = monthEntries.filter(e => e.tipo === 'Receita').reduce((sum, e) => sum + e.valor, 0);
-            const expense = monthEntries.filter(e => e.tipo === 'Despesa').reduce((sum, e) => sum + e.valor, 0);
             const balance = income - expense;
             reportText = `*Resumo de ${moment().format('MMMM')}* 🗓️\n\n💰 Receitas: R$ ${income.toFixed(2)}\n💸 Despesas: R$ ${expense.toFixed(2)}\n\nSaldo do Mês: *R$ ${balance.toFixed(2)}*`;
             break;
 
         case 'category_spending':
+            // LÓGICA ATUALIZADA AQUI
+            reportText = `*Gastos por Categoria em ${moment().format('MMMM')}* 🗂️\n`;
+            reportText += `(em relação à receita de R$ ${income.toFixed(2)})\n\n`;
+
             const spendingByCategory = monthEntries
                 .filter(e => e.tipo === 'Despesa')
                 .reduce((acc, e) => {
@@ -172,11 +176,15 @@ async function handleReport(bot, cbq, action) {
                 }, {});
 
             const sortedSpending = Object.entries(spendingByCategory).sort(([,a],[,b]) => b-a);
-            reportText = `*Gastos por Categoria em ${moment().format('MMMM')}* 🗂️\n\n`;
+            
             if (sortedSpending.length === 0) {
                 reportText += "Nenhuma despesa registrada este mês.";
             } else {
-                 reportText += sortedSpending.map(([cat, val]) => `• ${cat}: R$ ${val.toFixed(2)}`).join('\n');
+                 reportText += sortedSpending.map(([cat, val]) => {
+                    // Calcula o percentual em relação à receita total do mês
+                    const percentage = income > 0 ? (val / income) * 100 : 0;
+                    return `• ${cat}: R$ ${val.toFixed(2)}  *(${percentage.toFixed(1)}%)*`;
+                 }).join('\n');
             }
             break;
     }
